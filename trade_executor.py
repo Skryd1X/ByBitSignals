@@ -1,3 +1,7 @@
+from dotenv import load_dotenv
+import os
+load_dotenv()
+
 from pybit.unified_trading import HTTP
 from telegram import Bot
 from pymongo import MongoClient
@@ -10,7 +14,7 @@ BOT_TOKEN = "8128401211:AAG0K7GG23Ia4afmChkaXCct2ULlbP1-8c4"
 bot = Bot(token=BOT_TOKEN)
 
 # --- MongoDB ---
-MONGO_URI = "mongodb+srv://signalsbybitbot:ByBitSignalsBot%40@cluster0.ucqufe4.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+MONGO_URI = os.getenv("MONGO_URI")
 client = MongoClient(MONGO_URI)
 users_collection = client["signal_bot"]["users"]
 history_collection = client["signal_bot"]["history"]
@@ -33,15 +37,26 @@ async def open_trade_for_all_clients(symbol, side, entry_price, leverage, tp=Non
         fixed_usdt = float(user.get("fixed_usdt", 10))
         signals_left = user.get("signals_left", 0)
 
-        # 🔒 Пропускаем, если сигналов нет
         if signals_left <= 0:
             logging.info(f"[⛔ SKIP] user_id={user_id}, нет доступных сигналов.")
+            users_collection.update_one(
+                {"user_id": user_id},
+                {"$set": {"copy_enabled": False}}
+            )
             continue
 
         try:
             session = HTTP(api_key=user["api_key"], api_secret=user["api_secret"], recv_window=10000)
 
-            # Получаем шаг лота и минимальное кол-во
+            # 🛡️ Установка Hedge Mode, если отключён
+            try:
+                mode_info = session.get_position_mode()
+                if not mode_info.get("result", {}).get("hedgeMode", False):
+                    session.set_position_mode(mode=1)
+                    logging.info(f"🛠 Hedge Mode включён для user_id={user_id}")
+            except Exception as e:
+                logging.warning(f"[⚠️ HEDGE CHECK FAIL] user_id={user_id}: {e}")
+
             info = session.get_instruments_info(category="linear", symbol=symbol)
             info_list = info.get("result", {}).get("list", [])
             if not info_list:
@@ -52,7 +67,6 @@ async def open_trade_for_all_clients(symbol, side, entry_price, leverage, tp=Non
             step = lot_info.get("qtyStep", "0.001")
             min_qty = float(lot_info.get("minOrderQty", step))
 
-            # Расчёт объёма по USDT клиента и плечу мастера
             raw_qty = (fixed_usdt * leverage) / entry_price
             qty = round_qty(raw_qty, step)
 
@@ -60,10 +74,17 @@ async def open_trade_for_all_clients(symbol, side, entry_price, leverage, tp=Non
                 logging.warning(f"[⚠️ SKIP] user_id={user_id}, qty={qty} < min={min_qty} for {symbol}")
                 continue
 
-            # Позиционный индекс: 1 для Buy, 2 для Sell
-            position_idx = 1 if side == "Buy" else 2
+            positions = session.get_positions(category="linear", symbol=symbol)["result"]["list"]
+            current_position = next((p for p in positions if p["symbol"] == symbol), None)
 
-            # Пробуем установить плечо
+            include_position_idx = False
+            position_idx = None
+            if current_position:
+                idx = int(current_position.get("positionIdx", 0))
+                if idx in [1, 2]:  # Hedge Mode
+                    include_position_idx = True
+                    position_idx = 1 if side == "Buy" else 2
+
             try:
                 session.set_leverage(
                     category="linear",
@@ -74,41 +95,29 @@ async def open_trade_for_all_clients(symbol, side, entry_price, leverage, tp=Non
             except Exception as e:
                 logging.warning(f"[⚠️ LEVERAGE FAIL] user_id={user_id}, {symbol}: {e}")
 
-            # Сборка ордера
             base_order = {
                 "category": "linear",
                 "symbol": symbol,
                 "side": side,
                 "order_type": "Market",
                 "qty": str(qty),
-                "time_in_force": "GoodTillCancel",
-                "position_idx": position_idx
+                "time_in_force": "GoodTillCancel"
             }
 
+            if include_position_idx:
+                base_order["position_idx"] = position_idx
             if tp:
                 base_order["take_profit"] = round(tp, 4)
             if sl:
                 base_order["stop_loss"] = round(sl, 4)
 
-            # Удаление не-ASCII символов
             order_clean = {
                 k: str(v).encode('ascii', 'ignore').decode() if isinstance(v, str) else v
                 for k, v in base_order.items()
             }
 
-            # Подача ордера
-            try:
-                session.place_order(**order_clean)
-            except Exception as e:
-                err_text = str(e)
-                if "position idx not match position mode" in err_text:
-                    logging.warning(f"[⏪ RETRY ORDER] user_id={user_id}, ошибка из-за position_idx. Пробуем без него...")
-                    order_clean.pop("position_idx", None)
-                    session.place_order(**order_clean)
-                else:
-                    raise
+            session.place_order(**order_clean)
 
-            # ✅ Списываем сигнал
             users_collection.update_one(
                 {"user_id": user_id},
                 {"$inc": {"signals_left": -1}}
@@ -157,6 +166,15 @@ async def close_trade_for_all_clients(symbol: str):
         try:
             session = HTTP(api_key=user["api_key"], api_secret=user["api_secret"], recv_window=10000)
 
+            # 🛡️ Установка Hedge Mode, если отключён
+            try:
+                mode_info = session.get_position_mode()
+                if not mode_info.get("result", {}).get("hedgeMode", False):
+                    session.set_position_mode(mode=1)
+                    logging.info(f"🛠 Hedge Mode включён для user_id={user_id}")
+            except Exception as e:
+                logging.warning(f"[⚠️ HEDGE CHECK FAIL] user_id={user_id}: {e}")
+
             positions = session.get_positions(category="linear", settleCoin="USDT")["result"]["list"]
             position = next((p for p in positions if p["symbol"] == symbol), None)
             if not position or float(position["size"]) == 0:
@@ -164,16 +182,22 @@ async def close_trade_for_all_clients(symbol: str):
 
             side = "Sell" if position["side"] == "Buy" else "Buy"
             qty = float(position["size"])
+            position_idx = int(position.get("positionIdx", 0))
 
-            session.place_order(
-                category="linear",
-                symbol=symbol,
-                side=side,
-                order_type="Market",
-                qty=str(qty),
-                time_in_force="GoodTillCancel",
-                reduce_only=True
-            )
+            close_order = {
+                "category": "linear",
+                "symbol": symbol,
+                "side": side,
+                "order_type": "Market",
+                "qty": str(qty),
+                "time_in_force": "GoodTillCancel",
+                "reduce_only": True
+            }
+
+            if position_idx in [1, 2]:
+                close_order["position_idx"] = position_idx
+
+            session.place_order(**close_order)
 
             logging.info(f"[🛑 CLOSED] user_id={user_id}, {symbol} qty={qty}")
 
@@ -200,3 +224,4 @@ async def close_trade_for_all_clients(symbol: str):
 
         except Exception as e:
             logging.error(f"[❌ CLOSE ERROR] user_id={user_id}: {e}", exc_info=True)
+            logging.info(f"📌 user_id={user_id} | Hedge Mode: {position_idx in [1, 2]} | idx={position_idx}")

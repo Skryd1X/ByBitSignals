@@ -1,107 +1,110 @@
-from flask import Flask, request, jsonify
+from dotenv import load_dotenv
+import os
+load_dotenv()
+from telegram import (
+    Update,
+    LabeledPrice
+)
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    PreCheckoutQueryHandler,
+    MessageHandler,
+    filters
+)
 from pymongo import MongoClient
 import logging
-import hmac
-import hashlib
-import requests
-from uuid import uuid4
 
-app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
-
-# MongoDB
-MONGO_URI = "mongodb+srv://signalsbybitbot:ByBitSignalsBot%40@cluster0.ucqufe4.mongodb.net/?retryWrites=true&w=majority"
+# === Настройки ===
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CRYPTOBOT_PROVIDER_TOKEN = os.getenv("CRYPTOBOT_PROVIDER_TOKEN")
+MONGO_URI = os.getenv("MONGO_URI")
 client = MongoClient(MONGO_URI)
 users_collection = client["signal_bot"]["users"]
 
-# CryptoCloud
-SHOP_SECRET = "k6RPc5BOqZVrnwCBa54fep5n0x0GgEtfQqYh"
-CRYPTOCLOUD_API_KEY = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1dWlkIjoiTmpRek9ETT0iLCJ0eXBlIjoicHJvamVjdCIsInYiOiIzMzY4MmM5N2M4YzkwMTQyNTNlZjgxMTJhYTQwY2M2ZDBhOTkxODUwZjBlODg0OTNmYjNlNjAxMjExMGVkY2Y0IiwiZXhwIjo4ODE1MzExMzAxOX0.pL995r47Mno3rwnaQAA5CZ9NQ7wl4LIqXXzOmFfYrbQ"
-CRYPTOCLOUD_SHOP_ID = "pITBUtNlhTsYTDF7"
+# === Логирование ===
+logging.basicConfig(level=logging.INFO)
 
-# Пакеты сигналов
+# === Пакеты сигналов ===
 SIGNAL_PACKAGES = {
-    "10": 10,
-    "30": 35,
-    "50": 60
+    "15": 15,
+    "35": 30,
+    "60": 50
 }
 
-# ✅ Проверка подписи от CryptoCloud
-def is_valid_signature(data, signature):
-    sorted_items = sorted(data.items())
-    message = ':'.join(str(v) for k, v in sorted_items if k != 'sign')
-    calculated = hmac.new(SHOP_SECRET.encode(), message.encode(), hashlib.sha256).hexdigest()
-    return calculated == signature
+# === Команда /buy ===
+async def buy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
 
-# 📩 Обработка уведомлений об оплате
-@app.route("/payment/notify", methods=["POST"])
-def handle_payment_notification():
-    data = request.form.to_dict()
-    logging.info(f"[PAYMENT NOTIFY] {data}")
+    # ❗ По умолчанию пакет 15 (можно кастомизировать)
+    amount = "15"
+    signals = SIGNAL_PACKAGES[amount]
+    amount_usdt = int(amount)
+    amount_cents = amount_usdt * 100
 
-    signature = data.get("sign")
-    if not is_valid_signature(data, signature):
-        logging.warning("❌ Неверная подпись платежа.")
-        return jsonify({"error": "Invalid signature"}), 400
+    prices = [LabeledPrice(label=f"{signals} сигналов", amount=amount_cents)]
 
-    if data.get("status") != "success":
-        return jsonify({"status": "ignored"}), 200
-
-    amount = data.get("amount")
-    label = data.get("custom_fields[user_id]")
-    if not label:
-        return jsonify({"error": "Missing user_id"}), 400
-
-    try:
-        user_id = int(label)
-    except ValueError:
-        return jsonify({"error": "Invalid user_id"}), 400
-
-    signals = SIGNAL_PACKAGES.get(str(int(float(amount))))
-    if not signals:
-        return jsonify({"error": "Unknown amount"}), 400
-
-    users_collection.update_one(
-        {"user_id": user_id},
-        {"$inc": {"remaining_signals": signals}},
-        upsert=True
+    await context.bot.send_invoice(
+        chat_id=chat_id,
+        title="Покупка сигналов",
+        description=f"{signals} сигналов за {amount_usdt} USDT",
+        payload=f"user_{user_id}_{signals}",
+        provider_token=CRYPTOBOT_PROVIDER_TOKEN,
+        currency="USDT",
+        prices=prices,
+        need_name=False,
+        need_phone_number=False,
+        need_email=False,
+        need_shipping_address=False,
+        is_flexible=False
     )
+    logging.info(f"[💳 INVOICE SENT] user_id={user_id}, {signals} сигналов")
 
-    logging.info(f"[✅ SIGNALS ADDED] user_id={user_id}, +{signals}")
-    return jsonify({"status": "ok"}), 200
 
-# 🧾 Создание счёта на оплату
-def create_invoice(amount_usd: float, signals_count: int, user_id: int):
-    url = "https://api.cryptocloud.plus/v2/invoice/create"
-    headers = {
-        "Authorization": f"Token {CRYPTOCLOUD_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "shop_id": CRYPTOCLOUD_SHOP_ID,
-        "amount": str(amount_usd),
-        "currency": "USDT",  # ❗ CryptoCloud требует криптовалюту
-        "order_id": f"user{user_id}-{uuid4()}",
-        "description": f"Покупка {signals_count} сигналов",
-        "custom_fields": {
-            "user_id": str(user_id)
-        },
-        "success_url": "https://t.me/BybitAutoTrader_Bot",  # или свой сайт
-        "fail_url": "https://t.me/BybitAutoTrader_Bot",
-        "lifetime": 1800
-    }
+# === PreCheckout подтверждение ===
+async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.pre_checkout_query.answer(ok=True)
+
+
+# === Обработка успешной оплаты ===
+async def handle_successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    payment = update.message.successful_payment
+    payload = payment.invoice_payload
 
     try:
-        response = requests.post(url, headers=headers, json=payload)
-        if response.status_code == 200:
-            return response.json()["result"]["payment_url"]
-        else:
-            logging.error(f"[❌ CREATE_INVOICE] Ошибка: {response.text}")
-            return None
-    except Exception as e:
-        logging.error(f"[❌ EXCEPTION] Ошибка при создании счёта: {e}")
-        return None
+        _, user_id, signals = payload.split("_")
+        user_id = int(user_id)
+        signals = int(signals)
 
-# 🚀 Запуск Flask-сервера
-def run_payment_server():
-    app.run(host="0.0.0.0", port=8888, debug=False)
+        users_collection.update_one(
+            {"user_id": user_id},
+            {"$inc": {"signals_left": signals}, "$set": {"copy_enabled": True}},
+            upsert=True
+        )
+
+        await update.message.reply_text(
+            f"✅ Оплата прошла успешно!\nВам начислено {signals} сигналов."
+        )
+        logging.info(f"[✅ PAYMENT SUCCESS] user_id={user_id}, +{signals} сигналов")
+
+    except Exception as e:
+        logging.error(f"[❌ ERROR in successful_payment]: {e}")
+        await update.message.reply_text("❌ Ошибка при обработке оплаты. Обратитесь в поддержку.")
+
+
+# === Запуск бота ===
+def run_payment_bot():
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+    app.add_handler(CommandHandler("buy", buy_command))
+    app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, handle_successful_payment))
+
+    logging.info("🚀 Бот оплаты запущен.")
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    run_payment_bot()

@@ -1,6 +1,14 @@
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+from stats import calculate_full_stats
+
+CRYPTOBOT_TOKEN = os.getenv("CRYPTOBOT_TOKEN")
+
+print(f"[DEBUG] CRYPTOBOT_TOKEN={CRYPTOBOT_TOKEN}")
+
 from threading import Thread
-from payment_handler import create_invoice, run_payment_server
-from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
@@ -16,10 +24,9 @@ from subscribers import get_all_chat_ids  # ⬅️ ДОБАВЬ ЭТУ СТРО�
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-TOKEN = "8128401211:AAG0K7GG23Ia4afmChkaXCct2ULlbP1-8c4"
-MASTER_API_KEY = "TmjjxlaUBYl25XFy0A"
-MASTER_API_SECRET = "GFZc9MtTs72Plvi1VurxmqiSMv4nL6DV2Axm"
-
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+MASTER_API_KEY = os.getenv("MASTER_API_KEY")
+MASTER_API_SECRET = os.getenv("MASTER_API_SECRET")
 user_last_order = {}
 DEFAULT_RECV_WINDOW = 5000
 EXTENDED_RECV_WINDOW = 7500
@@ -56,8 +63,8 @@ def t(key, lang):
             "en": "✏️ Edit Keys"
         },
         "menu_status": {
-            "ru": "📊 Статус",
-            "en": "📊 Status"
+            "ru": "📈 Мой статус",
+            "en": "📈 My status"
         },
         "menu_stats": {
             "ru": "📈 Статистика",
@@ -98,6 +105,10 @@ def t(key, lang):
         "edit_keys": {
             "ru": "🔧 Что вы хотите сделать с ключами?",
             "en": "🔧 What would you like to do with keys?"
+        },
+        "menu_main": {
+            "ru": "🏠 Главное меню",
+            "en": "🏠 Main menu"
         },
         "replace_keys": {
             "ru": "✏️ Заменить ключи",
@@ -187,6 +198,10 @@ def t(key, lang):
             "ru": "✅ Ордер успешно исполнен!",
             "en": "✅ Order executed successfully!"
         },
+        "status_hint": {
+            "ru": "🔧 Для настройки автокопирования перейдите в настройки",
+            "en": "🔧 To configure auto-copying, go to settings"
+        },
         "menu_change_lang": {
             "ru": "🌐 Сменить язык",
             "en": "🌐 Change language"
@@ -199,22 +214,47 @@ def t(key, lang):
             "ru": "Имя пользователя сохранено.",
             "en": "Username saved."
         },
+        "menu_balance": {
+            "ru": "💰 Баланс сигналов",
+            "en": "💰 Signals Balance"
+        },
+        "buy_signals": {
+            "ru": "🛒 Купить сигналы",
+            "en": "🛒 Buy signals"
+        },
+        "menu_back": {
+            "ru": "🔙 Назад",
+            "en": "🔙 Back"
+        },
         "menu_support": {
             "ru": "🛟 Поддержка",
             "en": "🛟 Support"
-      }
+        }
     }
     return texts.get(key, {}).get(lang, texts.get(key, {}).get("ru", ""))
 
-# --- Главное меню ---
-from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-
 def get_main_menu(lang):
+    texts = {
+    "menu_status": {"ru": "📊 Мой статус", "en": "📊 My Status"},
+    "menu_stats": {"ru": "📈 Статистика", "en": "📈 Statistics"},  # <--- добавь эту строку
+    "menu_balance": {"ru": "💰 Баланс сигналов", "en": "💰 Signal Balance"},
+    "buy_signals": {"ru": "🛒 Купить сигналы", "en": "🛒 Buy Signals"},
+    "menu_settings": {"ru": "⚙️ Настройки", "en": "⚙️ Settings"},
+    "menu_support": {"ru": "🆘 Поддержка", "en": "🆘 Support"}
+    }
+    
+    def tr(key):
+        return texts.get(key, {}).get(lang, key)
+
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(t("menu_status", lang), callback_data="status")],
-        [InlineKeyboardButton(t("menu_set_amount", lang), callback_data="set_amount")],
-        [InlineKeyboardButton(t("menu_support", lang), url="https://t.me/bexruz2281488")]
+    [InlineKeyboardButton(tr("menu_status"), callback_data="status")],
+    [InlineKeyboardButton(tr("menu_stats"), callback_data="menu_stats")],
+    [InlineKeyboardButton(tr("menu_balance"), callback_data="balance")],
+    [InlineKeyboardButton(tr("buy_signals"), callback_data="tariff_menu")],
+    [InlineKeyboardButton(tr("menu_settings"), callback_data="settings")],
+    [InlineKeyboardButton(tr("menu_support"), url="https://t.me/bexruz2281488")]
     ])
+
     
 
 # Команда /start
@@ -222,16 +262,42 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not get_user(user_id):
         save_api_keys(user_id, None, None)
-    
-    lang_text = (
-        "👋 Добро пожаловать в *Bybit Copy Bot*!\n\n"
-        "📌 Бот позволяет подключить ваш аккаунт и автоматически копировать сигналы трейдера.\n"
-        "⚙️ Введите API-ключ, чтобы начать.\n"
-        "📖 Подробная инструкция и описание находятся в нижнем меню.\n\n"
-        "👇 Выберите язык:"
+
+    # 📌 Краткая инструкция (первым сообщением)
+    instruction_text = (
+        "🚀 ДЛЯ НАЧАЛА РАБОТЫ:\n"
+        "1️⃣ ВВЕДИТЕ СВОИ API КЛЮЧИ BYBIT\n"
+        "2️⃣ КУПИТЕ СИГНАЛЫ\n"
+        "3️⃣ ВКЛЮЧИТЕ АВТОКОПИРОВАНИЕ\n\n"
+        "📈 ПОСЛЕ ЭТОГО БОТ НАЧНЁТ ТОРГОВАТЬ ЗА ВАС"
     )
+    await update.message.reply_text(instruction_text, parse_mode="Markdown")
+
+    # 👋 Приветственный текст
+    welcome_text = (
+        "👋 *Добро пожаловать в Bybit Copy Bot!*\n\n"
+        "📌 Бот позволяет подключить ваш аккаунт и автоматически копировать сигналы трейдера на бирже Bybit.\n\n"
+        "⚠️ *Важно:* Рекомендуется иметь депозит от *100–150 USDT*. "
+        "Минимальная сумма одной сделки — *10 USDT* (установлено по умолчанию).\n\n"
+        "📉 *Риск-менеджмент:* Рекомендуется использовать не более *5% от депозита* на сделку. "
+        "При выборе большей суммы пользователь *несёт полную ответственность* за возможные потери. "
+        "Разработчики не несут ответственности за ваши действия и потери.\n\n"
+        "📖 Инструкция и описание находятся в нижнем меню.\n\n"
+        "👇 Выберите язык:\n\n"
+        "––––––––––––––––––––––––––––––––––––––––––\n\n"
+        "👋 *Welcome to Bybit Copy Bot!*\n\n"
+        "📌 This bot allows you to connect your account and automatically copy trading signals on Bybit.\n\n"
+        "⚠️ *Important:* It is recommended to have a deposit of *$100–$150 USDT*. "
+        "The minimum trade amount is *$10 USDT* (set by default).\n\n"
+        "📉 *Risk management:* It is strongly advised to use no more than *5% of your deposit* per trade. "
+        "If you manually select a higher amount, you *accept full responsibility* for any potential losses. "
+        "The bot and its developers are *not responsible* for your actions or losses.\n\n"
+        "📖 A full guide and description are available in the bottom menu.\n\n"
+        "👇 Choose your language:"
+    )
+
     await update.message.reply_text(
-        lang_text,
+        welcome_text,
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🇷🇺 Русский", callback_data="lang_ru"),
@@ -239,10 +305,188 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
     )
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InputMediaPhoto
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+from pymongo import MongoClient
+
+# Подключение к MongoDB
+MONGO_URI = os.getenv("MONGO_URI")
+client = MongoClient(MONGO_URI)
+users_collection = client["signal_bot"]["users"]
+
+async def handle_check_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+    user_data = users_collection.find_one({"user_id": user_id})
+
+    signals_left = user_data.get("signals_left", 0) if user_data else 0
+    lang = "ru"  # или получи язык из своей функции, если есть
+
+    if signals_left == 0:
+        text_ru = "❗️Вы ещё не приобретали сигналы.\n\nНажмите кнопку ниже, чтобы выбрать тариф и начать копировать сигналы."
+        text_en = "❗️You haven't purchased any signals yet.\n\nClick the button below to select a plan and start copying trades."
+    else:
+        text_ru = f"📊 У вас осталось *{signals_left}* сигналов."
+        text_en = f"📊 You have *{signals_left}* signals remaining."
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💳 Купить сигналы", callback_data="buy")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]
+    ])
+
+    await query.edit_message_text(
+        text=text_ru if lang == "ru" else text_en,
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from database import get_user, update_user, get_stats
+from database import get_user
+from cryptobot_payment import create_invoice  # обязательно должен быть импортирован
+
+# 👇 Укажи токен Telegram CryptoBot (полученный у @CryptoBot)
+CRYPTOBOT_TOKEN = os.getenv("CRYPTOBOT_TOKEN")
+
+# 👇 Тарифы: (кол-во сигналов, цена в USDT)
+package_map = {
+    "buy_15": (15, 15),
+    "buy_30": (35, 30),
+    "buy_50": (60, 50),
+}
+
+async def handle_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+    tariff = query.data
+
+    if tariff not in package_map:
+        await query.edit_message_text("❌ Неверный тариф.")
+        return
+
+    signals, amount = package_map[tariff]
+
+    user = get_user(user_id)
+    lang = user.get("lang", "ru") if user else "ru"
+
+    # Создание описания и payload для счёта
+    description = f"{signals} сигналов за {amount} USDT"
+    payload = f"user_{user_id}_{signals}"
+
+    invoice_response = create_invoice(
+        amount=amount,
+        asset="USDT",
+        description=description,
+        hidden_payload=payload
+    )
+
+    if not invoice_response.get("ok"):
+        await query.edit_message_text("⚠️ Ошибка при создании счёта. Попробуйте позже.")
+        return
+
+    invoice_url = invoice_response["result"]["pay_url"]
+
+    pay_text = "💳 Оплатить" if lang == "ru" else "💳 Pay"
+    back_text = "🔙 Назад" if lang == "ru" else "🔙 Back"
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(pay_text, url=invoice_url)],
+        [InlineKeyboardButton("🛟 Поддержка" if lang == "ru" else "🛟 Support", url="https://t.me/bexruz2281488")],
+        [InlineKeyboardButton(back_text, callback_data="main_menu")]
+    ])
+
+    if lang == "ru":
+        text = (
+            f"📦 Вы выбрали *{signals}* сигналов за *{amount}$*\n\n"
+            f"🔐 Оплата через [@CryptoBot](https://t.me/CryptoBot)\n"
+            f"✅ Сигналы будут зачислены *автоматически* после оплаты\n\n"
+            f"📌 Если возникнут вопросы — [напишите в поддержку](https://t.me/bexruz2281488)"
+        )
+    else:
+        text = (
+            f"📦 You selected *{signals}* signals for *{amount}$*\n\n"
+            f"🔐 Payment via [@CryptoBot](https://t.me/CryptoBot)\n"
+            f"✅ Signals will be credited *automatically* after payment\n\n"
+            f"📌 For any issues, [contact support](https://t.me/bexruz2281488)"
+        )
+
+    await query.edit_message_text(
+        text=text,
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
+
+# 💬 Функция отправки сообщения с кнопками (до оплаты)
+async def send_invoice_message(context, user_id, amount, signals):
+    lang = get_user(user_id).get("lang", "ru")
+    callback = "main_menu"
+
+    description = f"{signals} сигналов за {amount} USDT"
+    payload = f"user_{user_id}_{signals}"
+
+    invoice_response = create_invoice(
+        amount=amount,
+        asset="USDT",
+        description=description,
+        hidden_payload=payload
+    )
+
+    if not invoice_response.get("ok"):
+        await context.bot.send_message(chat_id=user_id, text="⚠️ Не удалось создать ссылку для оплаты.")
+        return
+
+    invoice_url = invoice_response["result"]["pay_url"]
+
+    if lang == "ru":
+        text = (
+            f"💰 *Счёт на пополнение создан!*\n"
+            f"💵 Сумма: *{amount:.2f} USDT*\n\n"
+            f"📝 *Инструкция:*\n"
+            f"1. Нажмите кнопку «Оплатить» ниже\n"
+            f"2. Оплатите встроенным способом Telegram\n"
+            f"3. Дождитесь подтверждения транзакции\n\n"
+            f"⏳ Счёт действителен *15 минут*\n\n"
+            f"✅ После оплаты *{signals} сигналов* будет зачислено на ваш баланс"
+        )
+        pay_button = "💳 Оплатить"
+        back_button = "🔙 Назад"
+    else:
+        text = (
+            f"💰 *Top-up invoice created!*\n"
+            f"💵 Amount: *{amount:.2f} USDT*\n\n"
+            f"📝 *Instructions:*\n"
+            f"1. Click the button below\n"
+            f"2. Use Telegram's built-in payment\n"
+            f"3. Wait for confirmation\n\n"
+            f"⏳ Invoice valid for *15 minutes*\n\n"
+            f"✅ After payment, *{signals} signals* will be credited"
+        )
+        pay_button = "💳 Pay"
+        back_button = "🔙 Back"
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(pay_button, url=invoice_url)],
+        [InlineKeyboardButton(back_button, callback_data=callback)]
+    ])
+
+    await context.bot.send_message(
+        chat_id=user_id,
+        text=text,
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
+
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+)
+from telegram.ext import ContextTypes
 import logging
+from database import get_user, update_user
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -252,61 +496,76 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = get_user(user_id)
     lang = user.get("lang", "ru") if user else "ru"
 
-    # --- Смена языка ---
+    if not data.startswith("buy_"):
+        try:
+            await query.message.delete()
+        except:
+            pass
+
     if data == "change_language":
-        await query.message.reply_text("🌐 Выберите язык / Choose your language:", reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🇷🇺 Русский", callback_data="lang_ru"),
-             InlineKeyboardButton("🇺🇸 English", callback_data="lang_en")]
-        ]))
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="🌐 Выберите язык / Choose your language:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🇷🇺 Русский", callback_data="lang_ru"),
+                 InlineKeyboardButton("🇺🇸 English", callback_data="lang_en")]
+            ])
+        )
         return
 
     elif data.startswith("lang_"):
         lang = "ru" if data == "lang_ru" else "en"
         update_user(user_id, {"lang": lang})
-        await query.message.reply_text(
-            t("language_set", lang),
+        api_btn = "📌 Где взять API ключи?" if lang == "ru" else "📌 How to get API keys?"
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=t("language_set", lang),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📌 Где взять API ключи?", callback_data="how_to_get_api")]
+                [InlineKeyboardButton(api_btn, callback_data="how_to_get_api")]
             ])
         )
-        await query.message.reply_text(t("choose_action", lang), reply_markup=get_bottom_keyboard(lang))
+        await context.bot.send_message(chat_id=user_id, text=t("choose_action", lang), reply_markup=get_bottom_keyboard(lang))
         return
 
-    # --- Отправка скриншотов API + переход к вводу ключа ---
+    elif data == "menu_stats":
+        stats_text = calculate_full_stats(user_id)
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
+        ])
+        await context.bot.send_message(chat_id=user_id, text=stats_text, parse_mode="Markdown", reply_markup=keyboard)
+        return
+
+
+
     elif data == "how_to_get_api":
         try:
-            media = [
-                InputMediaPhoto(media=open(f"images/api_{i}.png", "rb")) for i in range(1, 8)
-            ]
+            media = [InputMediaPhoto(open(f"images/api_{i}.png", "rb")) for i in range(1, 8)]
             await context.bot.send_media_group(chat_id=user_id, media=media)
             update_user(user_id, {"awaiting": "api_key"})
             await context.bot.send_message(chat_id=user_id, text=t("enter_api_key", lang), reply_markup=get_bottom_keyboard(lang))
         except Exception as e:
-            logging.error(f"❌ Ошибка при отправке скринов API: {e}")
-            await query.message.reply_text("⚠️ Не удалось отправить изображения.")
+            logging.error(f"Ошибка отправки изображений API: {e}")
+            await context.bot.send_message(chat_id=user_id, text="⚠️ Не удалось отправить изображения.")
         return
 
-    # --- API ключи ---
-    elif data == "enter_api" or data == "set_api":
+    elif data in ("enter_api", "set_api"):
         update_user(user_id, {"awaiting": "api_key"})
-        await query.message.reply_text(t("enter_api_key", lang), reply_markup=get_bottom_keyboard(lang))
+        await context.bot.send_message(chat_id=user_id, text=t("enter_api_key", lang), reply_markup=get_bottom_keyboard(lang))
         return
 
     elif data == "edit_keys":
-        await query.message.reply_text(t("edit_keys", lang), reply_markup=InlineKeyboardMarkup([
+        await context.bot.send_message(chat_id=user_id, text=t("edit_keys", lang), reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton(t("replace_keys", lang), callback_data="set_api")],
-            [InlineKeyboardButton(t("delete_keys", lang), callback_data="delete_keys")]
         ]))
         return
 
     elif data == "delete_keys":
         update_user(user_id, {"api_key": None, "api_secret": None, "copy_enabled": False})
-        await query.message.reply_text(t("keys_deleted", lang))
-        await query.message.reply_text(t("enter_api_key", lang), reply_markup=get_bottom_keyboard(lang))
+        await context.bot.send_message(chat_id=user_id, text=t("keys_deleted", lang))
+        await context.bot.send_message(chat_id=user_id, text=t("enter_api_key", lang), reply_markup=get_bottom_keyboard(lang))
         update_user(user_id, {"awaiting": "api_key"})
         return
 
-    # --- Статус аккаунта ---
     elif data == "status":
         msg = t("status_not_set", lang)
         if user and user.get("api_key"):
@@ -318,92 +577,124 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Amount: {fixed_usdt} USDT\n"
                 f"{t('account_type', lang)}: {user.get('account_type', 'UNIFIED')}"
             )
-        await query.message.reply_text(msg, reply_markup=get_main_menu(lang))
-        await query.message.reply_text(t("choose_action", lang), reply_markup=get_bottom_keyboard(lang))
+        await context.bot.send_message(chat_id=user_id, text=msg, reply_markup=get_main_menu(lang))
+        await context.bot.send_message(chat_id=user_id, text=t("status_hint", lang))
+        await context.bot.send_message(chat_id=user_id, text=t("choose_action", lang), reply_markup=get_bottom_keyboard(lang))
         return
 
-    # --- Статистика ---
-    elif data == "stats":
-        stats = get_stats(user_id)
-        msg = f"{t('menu_stats', lang)}:\n"
-        if not stats:
-            msg += t("no_data", lang)
-        else:
-            for s in stats:
-                symbol = s.get("symbol", "N/A")
-                side = s.get("side", "N/A")
-                qty = s.get("qty", s.get("size", 0))
-                price = s.get("price", s.get("entry", 0))
-                ts = s.get("timestamp")
-                ts_str = ts.strftime("%d.%m %H:%M") if ts else ""
-                msg += f"🔹 {symbol} | {side} | {qty} @ {price} {ts_str}\n"
-        await query.message.reply_text(msg, reply_markup=get_main_menu(lang))
-        await query.message.reply_text(t("choose_action", lang), reply_markup=get_bottom_keyboard(lang))
-        return
-
-    # --- Установить сумму сделки ---
     elif data == "set_amount":
         update_user(user_id, {"awaiting": "fixed_usdt"})
-        await query.message.reply_text(t("enter_fixed_amount", lang), reply_markup=get_bottom_keyboard(lang))
+        await context.bot.send_message(chat_id=user_id, text=t("enter_fixed_amount", lang), reply_markup=get_bottom_keyboard(lang))
         return
 
-    # --- Вкл / Выкл копирование ---
     elif data == "enable_copy":
         if user.get("api_key") and user.get("api_secret"):
             update_user(user_id, {"copy_enabled": True})
-            await query.message.reply_text(t("copy_on", lang), reply_markup=get_main_menu(lang))
+            await context.bot.send_message(chat_id=user_id, text=t("copy_on", lang), reply_markup=get_main_menu(lang))
         else:
-            await query.message.reply_text(t("enter_keys_first", lang))
-        await query.message.reply_text(t("choose_action", lang), reply_markup=get_bottom_keyboard(lang))
+            await context.bot.send_message(chat_id=user_id, text=t("enter_keys_first", lang))
+        await context.bot.send_message(chat_id=user_id, text=t("choose_action", lang), reply_markup=get_bottom_keyboard(lang))
         return
 
     elif data == "disable_copy":
         update_user(user_id, {"copy_enabled": False})
-        await query.message.reply_text(t("copy_off", lang), reply_markup=get_main_menu(lang))
-        await query.message.reply_text(t("choose_action", lang), reply_markup=get_bottom_keyboard(lang))
+        await context.bot.send_message(chat_id=user_id, text=t("copy_off", lang), reply_markup=get_main_menu(lang))
+        await context.bot.send_message(chat_id=user_id, text=t("choose_action", lang), reply_markup=get_bottom_keyboard(lang))
         return
 
-    # --- Покупка сигналов ---
-    elif data.startswith("buy_"):
-        price_map = {
-            "buy_10": (10, 10),
-            "buy_30": (30, 35),
-            "buy_50": (50, 60)
-        }
-        amount_usd, signals = price_map.get(data, (10, 10))
-        payment_url = create_invoice(amount_usd, signals, user_id)
-        if payment_url:
-            await query.message.reply_text(
-                f"✅ Для оплаты *{amount_usd}$* за *{signals}* сигналов, перейдите по ссылке:\n\n{payment_url}",
-                parse_mode="Markdown"
+    elif data == "tariff_menu":
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💵 15 сигналов – 15$", callback_data="buy_15")],
+            [InlineKeyboardButton("📦 35 сигналов – 30$", callback_data="buy_30")],
+            [InlineKeyboardButton("🚀 60 сигналов – 50$", callback_data="buy_50")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]
+        ])
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="💼 Выберите пакет сигналов:" if lang == "ru" else "💼 Choose a signal package:",
+            reply_markup=keyboard
+        )
+        return
+
+    elif data == "settings":
+        help_text = {
+            "ru": (
+                "⚙️ *Настройки* — здесь можно:\n\n"
+                "🔐 *Ввести API* — подключить свой аккаунт Bybit\n"
+                "✏️ *Редактировать ключи* — заменить или удалить ключи\n"
+                "🟢 *Включить* — включить автокопирование сигналов\n"
+                "🔴 *Выключить* — отключить копирование\n"
+                "🌐 *Сменить язык* — переключить язык бота\n\n"
+                "👇 Выберите действие:"
+            ),
+            "en": (
+                "⚙️ *Settings* — here you can:\n\n"
+                "🔐 *Enter API* — connect your Bybit account\n"
+                "✏️ *Edit Keys* — replace or delete keys\n"
+                "🟢 *Enable* — turn on signal copying\n"
+                "🔴 *Disable* — turn off copying\n"
+                "🌐 *Change language* — switch bot language\n\n"
+                "👇 Choose an action:"
             )
-        else:
-            await query.message.reply_text("❌ Не удалось создать счет. Повторите попытку позже.")
+        }
+
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=help_text[lang],
+            parse_mode="Markdown",
+            reply_markup=settings_menu(lang)
+        )
         return
 
-    # --- Ссылки на описания ---
+    elif data.startswith("buy_"):
+        await handle_payment(update, context)
+        return
+
+    elif data == "balance":
+        signals = user.get("signals_left", 0)
+        if signals > 0:
+            msg = f"📊 У вас осталось {signals} сигналов." if lang == "ru" else f"📊 You have {signals} signals left."
+        else:
+            msg = "❗ Вы ещё не приобрели сигналы." if lang == "ru" else "❗ You haven't purchased any signals yet."
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🛒 Купить сигналы" if lang == "ru" else "🛒 Buy Signals", callback_data="tariff_menu")],
+            [InlineKeyboardButton("🏠 Главное меню" if lang == "ru" else "🏠 Main Menu", callback_data="main_menu")]
+        ])
+        await context.bot.send_message(chat_id=user_id, text=msg, reply_markup=keyboard)
+        return
+
     elif data == "about_bot":
-        url = "https://telegra.ph/Bybit-Signals-Copy-Bot--Opisanie-07-17"
-        await query.message.reply_text(f"ℹ️ Подробнее о боте:\n{url}", reply_markup=get_bottom_keyboard(lang))
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="ℹ️ Подробнее о боте:\nhttps://telegra.ph/Bybit-Signals-Copy-Bot--Opisanie-07-17",
+            reply_markup=get_bottom_keyboard(lang)
+        )
         return
 
     elif data == "help_guide":
-        url = "https://telegra.ph/Instrukciya-po-ispolzovaniyu-07-17"
-        await query.message.reply_text(f"📖 Инструкция:\n{url}", reply_markup=get_bottom_keyboard(lang))
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="📖 Инструкция:\nhttps://telegra.ph/Instrukciya-po-ispolzovaniyu-07-17",
+            reply_markup=get_bottom_keyboard(lang)
+        )
         return
 
     elif data == "pricing":
-        await query.message.reply_text("💳 Тарифы скоро будут добавлены.", reply_markup=get_bottom_keyboard(lang))
+        await context.bot.send_message(chat_id=user_id, text="💳 Тарифы скоро будут добавлены.", reply_markup=get_bottom_keyboard(lang))
         return
 
-    # --- По умолчанию ---
+    elif data == "main_menu":
+        await context.bot.send_message(chat_id=user_id, text=t("choose_action", lang), reply_markup=get_main_menu(lang))
+        return
+
     else:
-        await query.message.reply_text(t("choose_action", lang), reply_markup=get_main_menu(lang))
-        await query.message.reply_text(t("choose_action", lang), reply_markup=get_bottom_keyboard(lang))
+        await context.bot.send_message(chat_id=user_id, text=t("choose_action", lang), reply_markup=get_main_menu(lang))
+        await context.bot.send_message(chat_id=user_id, text=t("choose_action", lang), reply_markup=get_bottom_keyboard(lang))
+
+
 
 import logging
-import requests
-from uuid import uuid4
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import ContextTypes
 from pybit.unified_trading import HTTP
@@ -411,41 +702,13 @@ from pybit.unified_trading import HTTP
 from subscribers import add_chat_id
 from database import get_user, update_user, save_api_keys
 
-CRYPTOCLOUD_API_KEY = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1dWlkIjoiTmpRek9ETT0iLCJ0eXBlIjoicHJvamVjdCIsInYiOiIzMzY4MmM5N2M4YzkwMTQyNTNlZjgxMTJhYTQwY2M2ZDBhOTkxODUwZjBlODg0OTNmYjNlNjAxMjExMGVkY2Y0IiwiZXhwIjo4ODE1MzExMzAxOX0.pL995r47Mno3rwnaQAA5CZ9NQ7wl4LIqXXzOmFfYrbQ"
-CRYPTOCLOUD_SHOP_ID = "pITBUtNlhTsYTDF7"
 
 def get_bottom_keyboard(lang):
     if lang == "ru":
-        buttons = [["📖 Инструкция", "ℹ️ О боте"], ["💳 Тарифы", "⚙️ Настройки"]]
+        buttons = [["💳 Тарифы", "⚙️ Настройки"], ["📖 Инструкция", "ℹ️ О боте"]]
     else:
-        buttons = [["📖 Instruction", "ℹ️ About"], ["💳 Pricing", "⚙️ Settings"]]
+        buttons = [["💳 Pricing", "⚙️ Settings"], ["📖 Instruction", "ℹ️ About"]]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
-
-def create_invoice(amount_usd: float, signals_count: int, user_id: int):
-    url = "https://api.cryptocloud.plus/v2/invoice/create"
-    headers = {
-        "Authorization": f"Token {CRYPTOCLOUD_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-    "shop_id": CRYPTOCLOUD_SHOP_ID,
-    "amount": str(amount_usd),
-    "currency": "USD",  # ✅ Указываем USD
-    "order_id": f"user{user_id}-{uuid4()}",
-    "description": f"Покупка {signals_count} сигналов",
-    "custom_fields": {
-        "user_id": str(user_id)
-    },
-    "success_url": "https://t.me/BybitAutoTrader_Bot/successful-payment",
-    "fail_url": "https://t.me/BybitAutoTrader_Bot/failed-payment",
-    "lifetime": 3600
-    }
-    response = requests.post(url, headers=headers, json=payload)
-    if response.status_code == 200:
-        return response.json()["result"]["payment_url"]
-    else:
-        logging.error(f"❌ Не удалось создать счет: {response.text}")
-        return None
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -539,7 +802,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if lowered in ["💳 тарифы", "💳 pricing"]:
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("10 сигналов - $10", callback_data="buy_10")],
+            [InlineKeyboardButton("15 сигналов - $15", callback_data="buy_15")],
             [InlineKeyboardButton("35 сигналов - $30", callback_data="buy_30")],
             [InlineKeyboardButton("60 сигналов - $50", callback_data="buy_50")]
         ])
@@ -547,69 +810,56 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if lowered.startswith("buy_"):
-        price_map = {"10": (10, 10), "30": (30, 35), "50": (50, 60)}
+        price_map = {"15": (15, 15), "30": (35, 30), "50": (60, 50)} 
         key = lowered.split("_")[1]
-        amount_usd, signals = price_map.get(key, (10, 10))
-        payment_url = create_invoice(amount_usd, signals, user_id)
-        if payment_url:
-            await update.message.reply_text(
-                f"✅ Для оплаты {amount_usd}$ за {signals} сигналов, перейдите по ссылке:\n{payment_url}"
-            )
-        else:
-            await update.message.reply_text("⚠️ Произошла ошибка при создании счета.")
+        amount_usd, signals = price_map.get(key, (15, 15))
+        await send_invoice_message(context, user_id, amount_usd, signals)
         return
 
     if lowered in ["⚙️ настройки", "⚙️ settings"]:
-        help_text = {
-            "ru": (
-                "⚙️ *Настройки* — здесь можно:\n\n"
-                "🔐 *Ввести API* — подключить свой аккаунт Bybit\n"
-                "✏️ *Редактировать ключи* — заменить или удалить ключи\n"
-                "🟢 *Включить* — включить автокопирование сигналов\n"
-                "🔴 *Выключить* — отключить копирование\n"
-                "🌐 *Сменить язык* — переключить язык бота\n\n"
-                "👇 Выберите действие:"
-            ),
-            "en": (
-                "⚙️ *Settings* — here you can:\n\n"
-                "🔐 *Enter API* — connect your Bybit account\n"
-                "✏️ *Edit Keys* — replace or delete keys\n"
-                "🟢 *Enable* — turn on signal copying\n"
-                "🔴 *Disable* — turn off copying\n"
-                "🌐 *Change language* — switch bot language\n\n"
-                "👇 Choose an action:"
-            )
-        }
-        await update.message.reply_text(help_text[lang], parse_mode="Markdown", reply_markup=settings_menu(lang))
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=t("choose_action", lang),
+            reply_markup=settings_menu(lang),
+            parse_mode="Markdown"
+        )
         return
 
     await update.message.reply_text(t("choose_action", lang), reply_markup=get_main_menu(lang))
 
+
 def settings_menu(lang):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔑 Ввести API", callback_data="enter_api")],
-        [InlineKeyboardButton("✏️ Редактировать ключи", callback_data="edit_keys")],
-        [InlineKeyboardButton("🟢 Включить копирование", callback_data="enable_copy")],
-        [InlineKeyboardButton("🔴 Выключить копирование", callback_data="disable_copy")],
-        [InlineKeyboardButton("🌐 Сменить язык", callback_data="change_language")],
+        [InlineKeyboardButton(t("menu_enter_api", lang), callback_data="enter_api")],
+        [InlineKeyboardButton(t("menu_edit_keys", lang), callback_data="edit_keys")],
+        [InlineKeyboardButton(t("menu_enable", lang), callback_data="enable_copy")],
+        [InlineKeyboardButton(t("menu_disable", lang), callback_data="disable_copy")],
+        [InlineKeyboardButton(t("menu_set_amount", lang), callback_data="set_amount")],
+        [InlineKeyboardButton(t("menu_change_lang", lang), callback_data="change_language")],
+        [InlineKeyboardButton(t("menu_main", lang), callback_data="main_menu")]
     ])
+
 
 
 
 import logging
 import asyncio
 import time
+import os
+from collections import deque
 from pybit.unified_trading import HTTP
-from trade_executor import open_trade_for_all_clients
+from trade_executor import open_trade_for_all_clients, close_trade_for_all_clients
 from database import get_all_users
 
 MASTER_API_KEY = "TmjjxlaUBYl25XFy0A"
 MASTER_API_SECRET = "GFZc9MtTs72Plvi1VurxmqiSMv4nL6DV2Axm"
 
-POLL_INTERVAL = 5  # Проверка каждые 5 секунд
-MAX_POSITION_AGE = 600  # ⚠️ 10 минут
+POLL_INTERVAL = 5  # каждые 5 секунд
+MAX_POSITION_AGE = 900  # максимум 15 минут с момента открытия
 
-already_sent = set()
+already_sent = deque(maxlen=500)
+
+previous_positions = {}
 
 async def monitor_master_signals(app):
     logging.info("🔄 monitor_master_signals запущен")
@@ -621,113 +871,201 @@ async def monitor_master_signals(app):
         logging.error(f"❌ Ошибка подключения к Master аккаунту: {e}", exc_info=True)
         return
 
+    global previous_positions
+
     while True:
         try:
             response = master.get_positions(category="linear", settleCoin="USDT")
             positions = response.get("result", {}).get("list", [])
 
-            logging.debug(f"👁 Получено {len(positions)} позиций от мастера")
+            logging.debug(f"📡 Получено {len(positions)} позиций от мастера")
 
+            current_symbols = set()
             for pos in positions:
-                logging.debug(f"🔍 Проверка позиции: {pos}")
-
                 symbol = pos.get("symbol")
                 side = pos.get("side")
                 size = float(pos.get("size", 0))
+                entry_price = float(pos.get("entryPrice") or pos.get("avgPrice") or pos.get("markPrice") or 0)
+                leverage = float(pos.get("leverage", 1))
+                updated_time_ms = float(pos.get("updatedTime", 0))
+                signal_time_sec = updated_time_ms / 1000
+                now = time.time()
+                age = now - signal_time_sec
 
-                # Подстраховка по entry
-                entry_price = float(
-                    pos.get("entryPrice") or pos.get("avgPrice") or pos.get("markPrice") or 0
+                logging.debug(
+                    f"🔍 {symbol} | side={side} | size={size} | entry={entry_price} | "
+                    f"updated_time={updated_time_ms} | age={age:.1f}s"
                 )
 
-                leverage = float(pos.get("leverage", 1))
-                created_time_ms = float(pos.get("createdTime", 0))
-                created_time_sec = created_time_ms / 1000
-
-                # ⛔ Фильтрация
-                if size <= 0 or entry_price <= 0:
-                    logging.debug(f"⏭ Пропущена пустая или нулевая позиция: {symbol}")
-                    continue
-                if time.time() - created_time_sec > MAX_POSITION_AGE:
-                    logging.debug(f"⏳ Пропущена старая позиция: {symbol}")
+                if size <= 0:
+                    logging.debug(f"⏭ Пропущена нулевая позиция: {symbol}")
                     continue
 
-                signal_key = f"{symbol}_{side}_{round(entry_price, 4)}"
+                if entry_price <= 0:
+                    logging.debug(f"⏭ Пропущена позиция без entry_price: {symbol}")
+                    continue
+
+                if age > MAX_POSITION_AGE:
+                    logging.debug(f"⏳ Пропущена старая позиция: {symbol} (age: {int(age)}s)")
+                    continue
+
+                signal_key = f"{symbol}_{side}_{round(entry_price, 4)}_{size}_{int(updated_time_ms)}"
                 if signal_key in already_sent:
                     logging.debug(f"🔁 Дубликат сигнала: {signal_key}")
+                    current_symbols.add(symbol)
                     continue
-                already_sent.add(signal_key)
 
-                logging.info(f"[📈 SIGNAL] {symbol} {side} | Entry: {entry_price} | Leverage: {leverage}")
+                already_sent.append(signal_key)
+                logging.info(f"[📈 СИГНАЛ] {symbol} {side} @ {entry_price:.4f} | Leverage: {leverage}x")
 
-                # Отправка уведомлений
+                current_symbols.add(symbol)
+                previous_positions[symbol] = side
+
                 for user in get_all_users():
                     chat_id = user.get("chat_id")
                     lang = user.get("lang", "ru")
-                    if not chat_id:
+                    signals_left = user.get("signals_left", 0)
+                    copy_enabled = user.get("copy_enabled", False)
+
+                    if not chat_id or signals_left <= 0 or not copy_enabled:
                         continue
 
-                    msg = (
-                        f"{t('new_trade', lang)}\n"
-                        f"{t('pair', lang)}: {symbol}\n"
-                        f"{t('side', lang)}: {side}\n"
-                        f"{t('entry_price', lang)}: {entry_price}\n"
-                        f"⚙️ Leverage: {leverage}x"
-                    )
-
                     try:
+                        msg = (
+                            f"{t('new_trade', lang)}\n"
+                            f"{t('pair', lang)}: {symbol}\n"
+                            f"{t('side', lang)}: {side}\n"
+                            f"{t('entry_price', lang)}: {entry_price}\n"
+                            f"⚙️ Leverage: {leverage}x"
+                        )
                         await app.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
+                        logging.info(f"📤 Сигнал отправлен: {chat_id}")
                     except Exception as e:
-                        logging.warning(f"⚠️ Telegram ошибка: {chat_id} | {e}")
+                        logging.warning(f"⚠️ Telegram ошибка ({chat_id}): {e}")
 
                 try:
                     await open_trade_for_all_clients(symbol, side, entry_price, leverage)
                 except Exception as e:
-                    logging.error(f"[❌ ERROR] Ошибка при открытии сделки: {e}", exc_info=True)
+                    logging.error(f"❌ Ошибка в open_trade_for_all_clients: {e}", exc_info=True)
+
+            # 🔻 Проверка на закрытие: если позиция исчезла у мастера — закрыть у всех клиентов
+            closed_symbols = set(previous_positions.keys()) - current_symbols
+            for closed_symbol in closed_symbols:
+                try:
+                    logging.info(f"[🛑 ЗАКРЫТИЕ] Мастер закрыл позицию: {closed_symbol}, закрываем у всех клиентов.")
+                    await close_trade_for_all_clients(closed_symbol)
+                    del previous_positions[closed_symbol]
+                except Exception as e:
+                    logging.error(f"❌ Ошибка при закрытии позиции {closed_symbol}: {e}", exc_info=True)
 
             await asyncio.sleep(POLL_INTERVAL)
 
         except Exception as e:
-            logging.error(f"[🔥 LOOP ERROR] Ошибка в основном цикле мониторинга: {e}", exc_info=True)
+            logging.error(f"[🔥 LOOP ERROR] Ошибка в основном цикле: {e}", exc_info=True)
             await asyncio.sleep(POLL_INTERVAL)
 
+
+
+
         
-import asyncio
-import nest_asyncio
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     CallbackQueryHandler,
     MessageHandler,
+    PreCheckoutQueryHandler,
     filters,
 )
+import asyncio
+import nest_asyncio
 
-# Предположим, что у тебя где-то объявлены:
-# TOKEN, start, button_handler, handle_text, monitor_master_signals
+# 🔐 Токен бота
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
+
+# ✅ Ответ на пречекаут
+async def precheckout_callback(update, context):
+    await update.pre_checkout_query.answer(ok=True)
+
+
+# 🔁 Главный запуск
 async def main():
-    app = ApplicationBuilder().token(TOKEN).build()
-        
-    # 🚀 Запуск Flask payment-сервера параллельно
-    flask_thread = Thread(target=run_payment_server)
-    flask_thread.daemon = True
-    flask_thread.start()
+    # ✅ Проверка обязательных переменных окружения
+    required_vars = ["TELEGRAM_TOKEN", "CRYPTOBOT_TOKEN", "MASTER_API_KEY", "MASTER_API_SECRET", "MONGO_URI"]
+    missing = [var for var in required_vars if not os.getenv(var)]
+    if missing:
+        raise ValueError(f"⛔ Отсутствуют переменные окружения: {', '.join(missing)}")
 
+    # 🎯 Запуск приложения Telegram
+    application = ApplicationBuilder().token(os.getenv("TELEGRAM_TOKEN")).build()
 
-    # Обработчики команд и сообщений
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    # 💬 Импорт обработчиков платежей
+    from cryptobot_payment import handle_payment, check_invoice_status
 
-    # ⏱ Запускаем мониторинг сигналов в фоне
-    asyncio.create_task(monitor_master_signals(app))
+    # 💬 Обработчики команд
+    application.add_handler(CommandHandler("start", start))
+
+    # ✅ Специфические CallbackQuery — идут ПЕРВЫМИ
+    application.add_handler(CallbackQueryHandler(handle_check_balance, pattern="^check_balance$"))
+    application.add_handler(CallbackQueryHandler(handle_payment, pattern="^buy_(15|30|50)$"))
+    application.add_handler(CallbackQueryHandler(check_invoice_status, pattern="^check_invoice_"))
+
+    # 🔘 Общий обработчик кнопок (в т.ч. настройки)
+    application.add_handler(CallbackQueryHandler(button_handler, pattern=".*"))
+
+    # 💬 Обработка текстовых сообщений (нижнее меню)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    # 🧠 Фоновый мониторинг сигналов
+    asyncio.create_task(monitor_master_signals(application))
 
     print("✅ Бот запущен.")
+    await application.run_polling()
+async def wrap_monitor_signals(app):
+    try:
+        await monitor_master_signals(app)
+    except Exception as e:
+        logging.error(f"❌ Ошибка в мониторинге сигналов: {e}", exc_info=True)
 
-    # ✅ Новый правильный запуск polling
-    await app.run_polling()
+async def main():
+    required_vars = ["TELEGRAM_TOKEN", "CRYPTOBOT_TOKEN", "MASTER_API_KEY", "MASTER_API_SECRET", "MONGO_URI"]
+    missing = [var for var in required_vars if not os.getenv(var)]
+    if missing:
+        raise ValueError(f"⛔ Отсутствуют переменные окружения: {', '.join(missing)}")
 
-if __name__ == '__main__':
+    application = ApplicationBuilder().token(os.getenv("TELEGRAM_TOKEN")).build()
+
+    from cryptobot_payment import handle_payment, check_invoice_status
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(handle_check_balance, pattern="^check_balance$"))
+    application.add_handler(CallbackQueryHandler(handle_payment, pattern="^buy_(15|30|50)$"))
+    application.add_handler(CallbackQueryHandler(check_invoice_status, pattern="^check_invoice_"))
+    application.add_handler(CallbackQueryHandler(button_handler, pattern=".*"))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    asyncio.create_task(wrap_monitor_signals(application))
+
+    logging.info("✅ Бот запущен.")
+    await application.run_polling()
+
+if __name__ == "__main__":
     import nest_asyncio
     nest_asyncio.apply()
-    asyncio.get_event_loop().run_until_complete(main())
+
+    # Безопасный тест
+    try:
+        from cryptobot_payment import create_invoice
+        print(create_invoice(1, "USDT", "Test", "payload_test"))
+    except Exception as e:
+        logging.warning(f"⚠️ Ошибка при тестовом создании инвойса: {e}")
+
+    asyncio.run(main())
+
+
+# 🚀 Запуск
+if __name__ == "__main__":
+    from cryptobot_payment import create_invoice
+    print(create_invoice(1, "USDT", "Test", "payload_test"))
+    import nest_asyncio
+    nest_asyncio.apply()
+    asyncio.run(main())
